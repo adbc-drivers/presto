@@ -1,0 +1,13 @@
+{
+    "format": "+s",
+    "children": [
+        {
+            "name": "res",
+            "format": "w:16",
+            "flags": ["nullable"],
+            "metadata": {
+                "ARROW:extension:name": "arrow.uuid"
+            }
+        }
+    ]
+}
