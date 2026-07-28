@@ -437,10 +437,7 @@ func formatDecimalString(value *big.Int, scale int32) string {
 	scaleFactor := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(scale)), nil)
 	rat := new(big.Rat).SetFrac(value, scaleFactor)
 
-	digits := int(scale)
-	if digits < 0 {
-		digits = 0
-	}
+	digits := max(int(scale), 0)
 	return rat.FloatString(digits)
 }
 

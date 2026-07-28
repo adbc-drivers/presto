@@ -158,9 +158,7 @@ def test_uri_catalog_only(
 ) -> None:
     """Tests URI with catalog but no schema."""
 
-    catalog_only_uri = (
-        f"presto://{presto_username}@{presto_host}:{presto_port}/memory?{presto_uri_query}"
-    )
+    catalog_only_uri = f"presto://{presto_username}@{presto_host}:{presto_port}/memory?{presto_uri_query}"
 
     with adbc_driver_manager.dbapi.connect(
         driver=driver_path,
