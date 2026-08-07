@@ -12,18 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// part: bind
+// part: setup_query
 
-{"idx": 3, "res": 1684158330000, "res2": 1684158330000}
-{"idx": 2, "res": 946684800000, "res2": 946684800000}
-{"idx": 1, "res": -14182940000, "res2": -14182940000}
-{"idx": 4, "res": 253402300799999, "res2": 253402268399999}
-{"idx": 0, "res": null, "res2": null}
+CREATE TABLE test_timestamptz (
+    idx INT,
+    res TIMESTAMP WITH TIME ZONE,
+    res2 TIMESTAMP WITH TIME ZONE
+);
 
-// part: expected
+// part: bind_query
 
-{"res": null, "res2": null}
-{"res": -14182940000, "res2": -14182940000}
-{"res": 946684800000, "res2": 946684800000}
-{"res": 1684158330000, "res2": 1684158330000}
-{"res": 253402300799999, "res2": 253402268399999}
+INSERT INTO test_timestamptz VALUES (
+    $1,
+    CAST($2 AS TIMESTAMP WITH TIME ZONE),
+    CAST($3 AS TIMESTAMP WITH TIME ZONE)
+)

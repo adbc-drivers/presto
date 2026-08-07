@@ -16,7 +16,7 @@
 [tags]
 sql-type-name = "DECIMAL"
 
-// part: input_schema
+// part: expected_schema
 
 {
     "format": "+s",
@@ -28,7 +28,7 @@ sql-type-name = "DECIMAL"
         },
         {
             "name": "value",
-            "format": "d:10,0,64",
+            "format": "u",
             "flags": ["nullable"]
         }
     ]

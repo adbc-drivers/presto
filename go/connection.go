@@ -52,6 +52,17 @@ var _ driverbase.DbObjectsEnumerator = (*prestoConnectionImpl)(nil)
 // implements CurrentNameSpacer interface
 var _ driverbase.CurrentNamespacer = (*prestoConnectionImpl)(nil)
 
+// SetAutocommit implements driverbase.AutocommitSetter.
+//
+// Transactions are not supported by this driver. Keep the connection in
+// autocommit mode and report disabling it as unsupported.
+func (c *prestoConnectionImpl) SetAutocommit(ctx context.Context, enabled bool) error {
+	if enabled {
+		return nil
+	}
+	return c.ErrorHelper.NotImplemented("cannot disable autocommit: transactions are not supported")
+}
+
 // GetCurrentCatalog implements driverbase.CurrentNamespacer.
 //
 // PrestoDB has no current_catalog SQL function (unlike Trino), so the driver
@@ -201,7 +212,7 @@ func (c *prestoConnectionImpl) GetTableSchema(ctx context.Context, catalog *stri
 			wrappedColType.Precision = &l
 		}
 
-		arrowType, nullable, metadata, err := c.TypeConverter.ConvertRawColumnType(wrappedColType)
+		arrowType, nullable, metadata, err := typeConverter.ConvertRawColumnType(wrappedColType)
 		if err != nil {
 			return nil, c.ErrorHelper.WrapInternal(err, "failed to convert column type for %s", colType.Name())
 		}
@@ -243,7 +254,7 @@ func (c *prestoConnectionImpl) ExecuteBulkIngest(ctx context.Context, stmt sqlwr
 	if options.IngestBatchSize > 0 {
 		return sqlwrapper.ExecuteBatchedBulkIngest(
 			ctx, stmt, conn, options, stream,
-			c.TypeConverter, c, &c.Base().ErrorHelper,
+			typeConverter, c, &c.Base().ErrorHelper,
 		)
 	}
 
@@ -294,7 +305,7 @@ func (c *prestoConnectionImpl) executeDynamicBatchedIngest(
 				arr := recordBatch.Column(colIdx)
 				field := schema.Field(colIdx)
 
-				goValue, err := c.TypeConverter.ConvertArrowToGo(arr, rowIdx, &field)
+				goValue, err := typeConverter.ConvertArrowToGo(arr, rowIdx, &field)
 				if err != nil {
 					return totalRowsInserted, c.ErrorHelper.WrapIO(err, "failed to convert value")
 				}
@@ -425,6 +436,10 @@ func (c *prestoConnectionImpl) getParameterPlaceholder(field arrow.Field) string
 		return "CAST(? AS TINYINT)"
 	case *arrow.Int16Type:
 		return "CAST(? AS SMALLINT)"
+	case *arrow.Int32Type:
+		return "CAST(? AS INTEGER)"
+	case *arrow.Int64Type:
+		return "CAST(? AS BIGINT)"
 	case *arrow.Float32Type:
 		return "CAST(? AS REAL)"
 	case *arrow.Float64Type:

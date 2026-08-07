@@ -12,18 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// part: bind
+// part: metadata
 
-{"idx": 3, "res": 1684158330000000, "res2": 1684158330000000}
-{"idx": 2, "res": 946684800000000, "res2": 946684800000000}
-{"idx": 1, "res": -14182940000000, "res2": -14182940000000}
-{"idx": 4, "res": 253402300799999999, "res2": 253402268399999000}
-{"idx": 0, "res": null, "res2": null}
-
-// part: expected
-
-{"res": null, "res2": null}
-{"res": -14182940000000, "res2": -14182940000000}
-{"res": 946684800000000, "res2": 946684800000000}
-{"res": 1684158330000000, "res2": 1684158330000000}
-{"res": 253402300799999999, "res2": 253402268399999000}
+# PrestoDB does not support parameterized TIMESTAMP(p) types and only provides
+# fixed millisecond precision, so non-millisecond precision cases are skipped.
+hide = true

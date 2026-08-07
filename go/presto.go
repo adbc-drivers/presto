@@ -15,8 +15,10 @@
 package presto
 
 import (
+	"bytes"
 	"context"
 	"database/sql/driver"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"strconv"
@@ -39,6 +41,12 @@ import (
 // prestoTypeConverter provides Presto-specific type conversion enhancements
 type prestoTypeConverter struct {
 	sqlwrapper.DefaultTypeConverter
+}
+
+const vendorName = "Presto"
+
+var typeConverter = &prestoTypeConverter{
+	DefaultTypeConverter: sqlwrapper.DefaultTypeConverter{VendorName: vendorName},
 }
 
 // ConvertRawColumnType implements TypeConverter with Presto-specific enhancements.
@@ -148,6 +156,20 @@ func (m *prestoTypeConverter) CreateInserter(field *arrow.Field, builder array.B
 		return m.DefaultTypeConverter.CreateInserter(field, builder)
 	case *arrow.Date32Type:
 		return &date32Inserter{builder: builder.(*array.Date32Builder)}, nil
+	case *arrow.StringType:
+		dbTypeName, exists := field.Metadata.GetValue(sqlwrapper.MetaKeyDatabaseTypeName)
+		if exists {
+			switch strings.ToUpper(dbTypeName) {
+			case "IPADDRESS":
+				return &prestoStringInserter{builder: builder.(*array.StringBuilder)}, nil
+			case "ARRAY", "MAP", "ROW":
+				return &prestoStringInserter{
+					builder:     builder.(*array.StringBuilder),
+					compactJSON: true,
+				}, nil
+			}
+		}
+		return m.DefaultTypeConverter.CreateInserter(field, builder)
 	case *arrow.MonthDayNanoIntervalType:
 		// Interval types require custom inserters
 		dbTypeName, exists := field.Metadata.GetValue(sqlwrapper.MetaKeyDatabaseTypeName)
@@ -170,6 +192,42 @@ func (m *prestoTypeConverter) CreateInserter(field *arrow.Field, builder array.B
 		// For all other types, use default inserter
 		return m.DefaultTypeConverter.CreateInserter(field, builder)
 	}
+}
+
+// prestoStringInserter removes the extra JSON string encoding added by the
+// Presto client's fallback conversion for IPADDRESS and complex values.
+type prestoStringInserter struct {
+	builder     *array.StringBuilder
+	compactJSON bool
+}
+
+func (ins *prestoStringInserter) AppendValue(sqlValue any) error {
+	unwrapped, err := unwrap(sqlValue)
+	if err != nil {
+		return err
+	}
+	if unwrapped == nil {
+		ins.builder.AppendNull()
+		return nil
+	}
+
+	value, ok := unwrapped.(string)
+	if !ok {
+		return fmt.Errorf("expected string for Presto string-backed type, got %T", sqlValue)
+	}
+
+	var decoded string
+	if err := json.Unmarshal([]byte(value), &decoded); err == nil {
+		value = decoded
+	}
+	if ins.compactJSON {
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, []byte(value)); err == nil {
+			value = compact.String()
+		}
+	}
+	ins.builder.Append(value)
+	return nil
 }
 
 func unwrap(val any) (any, error) {
@@ -407,9 +465,23 @@ func (m *prestoTypeConverter) ConvertArrowToGo(arrowArray arrow.Array, index int
 		return a.Value(index).Float32(), nil
 
 	case *array.Float32:
-		// Widen to float64 for the presto go client; combined with a
-		// CAST(? AS REAL) placeholder to preserve the SQL type.
-		return float64(a.Value(index)), nil
+		// Fixed-point formatting expands extreme values into integer-looking
+		// literals that Presto rejects.  A quoted scientific representation,
+		// combined with CAST(? AS REAL), handles the full Arrow range.
+		return strconv.FormatFloat(float64(a.Value(index)), 'g', -1, 32), nil
+
+	case *array.Float64:
+		return strconv.FormatFloat(a.Value(index), 'g', -1, 64), nil
+
+	case *array.Int64:
+		// In particular, -9223372036854775808 cannot be expressed as a plain
+		// Presto literal: the positive token overflows before unary minus is
+		// applied.  Cast from a string instead.
+		value := a.Value(index)
+		if value == -1<<63 {
+			return strconv.FormatInt(value, 10), nil
+		}
+		return int64(value), nil
 
 	case *array.FixedSizeBinary:
 		// Check metadata for UUID extension type indication
@@ -463,13 +535,8 @@ func (f *prestoConnectionFactory) CreateStatement(stmt *sqlwrapper.StatementImpl
 
 // NewDriver constructs the ADBC Driver for "presto".
 func NewDriver(alloc memory.Allocator) driverbase.DriverWithContext {
-	vendorName := "Presto"
-	typeConverter := &prestoTypeConverter{
-		DefaultTypeConverter: sqlwrapper.DefaultTypeConverter{VendorName: vendorName},
-	}
-
 	factory := &prestoConnectionFactory{}
-	driver := sqlwrapper.NewDriver(alloc, "presto", vendorName, NewPrestoDBFactory(), typeConverter).
+	driver := sqlwrapper.NewDriver(alloc, "presto", vendorName, NewPrestoDBFactory()).
 		WithConnectionFactory(factory).
 		WithStatementFactory(factory).
 		WithErrorInspector(PrestoErrorInspector{})

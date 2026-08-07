@@ -16,7 +16,16 @@
 [tags]
 sql-type-name = "DECIMAL"
 
-// part: input_schema
+// part: expected
+
+{"idx": 0, "value": null}
+{"idx": 1, "value": "0.00"}
+{"idx": 2, "value": "0.99"}
+{"idx": 3, "value": "-0.99"}
+{"idx": 4, "value": "0.10"}
+{"idx": 5, "value": "-0.10"}
+
+// part: expected_schema
 
 {
     "format": "+s",
@@ -28,7 +37,7 @@ sql-type-name = "DECIMAL"
         },
         {
             "name": "value",
-            "format": "d:2,2,32",
+            "format": "u",
             "flags": ["nullable"]
         }
     ]

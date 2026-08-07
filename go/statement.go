@@ -22,6 +22,10 @@ type prestoStatement struct {
 	*sqlwrapper.StatementImplBase
 }
 
+func (st *prestoStatement) MakeTypeConverter(vendorName string) sqlwrapper.TypeConverter {
+	return typeConverter
+}
+
 // GetAdditionalExecParams returns extra parameters to pass with query
 // execution.  The presto go client interpolates all parameters positionally
 // and does not support out-of-band named parameters (such as progress

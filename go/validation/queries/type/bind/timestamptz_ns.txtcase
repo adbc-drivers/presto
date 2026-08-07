@@ -12,10 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// part: expected
+// part: metadata
 
-{"res": null, "res2": null}
-{"res": -9223372036854775808, "res2": -9223371977854775808}
-{"res": 946684800000000000, "res2": 946684800000000000}
-{"res": 1684158330000000000, "res2": 1684158330000000000}
-{"res": 9223372036854775807, "res2": 9223372036854775807}
+# PrestoDB does not support parameterized TIMESTAMP(p) types and only provides
+# fixed millisecond precision, so non-millisecond precision cases are skipped.
+hide = true
