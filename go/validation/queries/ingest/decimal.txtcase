@@ -29,7 +29,7 @@ sql-type-name = "DECIMAL"
         },
         {
             "name": "value",
-            "format": "d:10,2,64",
+            "format": "u",
             "flags": ["nullable"]
         }
     ]

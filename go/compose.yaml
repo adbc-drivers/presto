@@ -24,15 +24,29 @@ services:
       presto-init:
         condition: service_completed_successfully
 
+  cert-generator:
+    image: alpine:latest
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        apk add --no-cache openssl >/dev/null
+        /bin/sh /work/certs/generate-certs.sh
+    volumes:
+      - "./ci/docker/certs:/work/certs"
+
   presto:
     image: prestodb/presto:latest
+    depends_on:
+      cert-generator:
+        condition: service_completed_successfully
     healthcheck:
       # /v1/info reports "starting":true until the server is ready to accept
-      # queries.
+      # queries. Check both transports so TLS validation does not start before
+      # the HTTPS listener is ready.
       test:
         [
           "CMD-SHELL",
-          "curl -sf http://localhost:8080/v1/info | grep -q '\"starting\":false'",
+          "curl -sf http://localhost:8080/v1/info | grep -q '\"starting\":false' && curl -skf https://localhost:8443/v1/info | grep -q '\"starting\":false'",
         ]
       interval: 5s
       timeout: 5s
@@ -40,7 +54,10 @@ services:
       start_period: 20s
     ports:
       - 8080:8080
+      - 8443:8443
     volumes:
+      - "./ci/docker/presto/config.properties:/opt/presto-server/etc/config.properties:ro"
+      - "./ci/docker/certs:/certs:ro"
       # Replace the image's default catalog directory (jmx, tpcds, etc.) with
       # just the catalogs used by the test suites; enumerating the built-in
       # catalogs makes unfiltered GetObjects crawls very slow.

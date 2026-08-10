@@ -17,6 +17,7 @@ package presto
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/apache/arrow-adbc/go/adbc"
 	presto "github.com/prestodb/presto-go-client/v2"
@@ -43,7 +44,26 @@ func (t PrestoErrorInspector) InspectError(err error, defaultStatus adbc.Status)
 			// User errors include syntax errors, invalid arguments, etc.
 			// Check error name for more specific mapping
 			switch queryErr.ErrorName {
-			case "SYNTAX_ERROR", "INVALID_COLUMN_REFERENCE", "MISSING_COLUMN_NAME", "DUPLICATE_COLUMN_NAME":
+			case "SYNTAX_ERROR":
+				// The memory connector reports some object-state errors as
+				// SYNTAX_ERROR instead of the more specific standard error
+				// names. Recover the ADBC status from those stable messages.
+				message := strings.ToLower(queryErr.Message)
+				switch {
+				case strings.Contains(message, "does not exist"):
+					status = adbc.StatusNotFound
+				case strings.Contains(message, "already exists"):
+					status = adbc.StatusAlreadyExists
+				case strings.Contains(message, "insert query has") &&
+					strings.Contains(message, "but expected") &&
+					strings.Contains(message, "target column"):
+					// CreateAppend found the table, but its schema does not
+					// match the input schema.
+					status = adbc.StatusAlreadyExists
+				default:
+					status = adbc.StatusInvalidArgument
+				}
+			case "INVALID_COLUMN_REFERENCE", "MISSING_COLUMN_NAME", "DUPLICATE_COLUMN_NAME":
 				status = adbc.StatusInvalidArgument
 			case "NOT_FOUND", "CATALOG_NOT_FOUND", "COLUMN_NOT_FOUND", "TABLE_NOT_FOUND", "SCHEMA_NOT_FOUND", "FUNCTION_NOT_FOUND", "MISSING_CATALOG_NAME", "MISSING_SCHEMA_NAME":
 				status = adbc.StatusNotFound

@@ -33,12 +33,17 @@
    export PRESTO_DSN="presto://test@localhost:8080/memory/default"
    ```
 
-   The local Docker setup serves plain HTTP only.  When validating against an
-   HTTPS deployment, switch `PRESTO_SSL_MODE` to `https`, set
-   `PRESTO_SSL_CERT_PATH` to the CA certificate, and use:
+   The local Docker setup serves HTTP on port 8080 and HTTPS on port 8443. It
+   generates a localhost certificate in `ci/docker/certs`. To exercise both
+   transports, use:
 
    ```shell
-   export PRESTO_DSN="presto://test@host:8443/memory/default?ssl_ca=/path/to/ca.crt"
+   export PRESTO_PORT="8443"
+   export PRESTO_HTTP_PORT="8080"
+   export PRESTO_HTTPS_PORT="8443"
+   export PRESTO_SSL_MODE="https"
+   export PRESTO_SSL_CERT_PATH="${PWD}/ci/docker/certs/ca.crt"
+   export PRESTO_DSN="presto://test@localhost:8443/memory/default?ssl_ca=${PRESTO_SSL_CERT_PATH}"
    ```
 
    `PRESTO_DSN` is used by the general validation suite. The URI-focused tests in

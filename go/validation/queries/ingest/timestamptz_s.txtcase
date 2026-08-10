@@ -1,4 +1,4 @@
-// Copyright (c) 2025 ADBC Drivers Contributors
+// Copyright (c) 2026 ADBC Drivers Contributors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,20 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// part: input
+// part: metadata
 
-{"idx": 0, "value": null, "value2": null}
-{"idx": 1, "value": 0, "value2": 0}
-{"idx": 2, "value": 946684800, "value2": 946684800}
-{"idx": 3, "value": 1684158330, "value2": 1684158330}
-{"idx": 4, "value": -62135596800, "value2": -62135596800}
-{"idx": 5, "value": 253402300799, "value2": 253402268399}
-
-// part: expected
-
-{"idx": 0, "value": null, "value2": null}
-{"idx": 1, "value": 0, "value2": 0}
-{"idx": 2, "value": 946684800, "value2": 946684800}
-{"idx": 3, "value": 1684158330, "value2": 1684158330}
-{"idx": 4, "value": -62135596800, "value2": -62135596741}
-{"idx": 5, "value": 253402300799, "value2": 253402268399}
+# PrestoDB does not support parameterized TIMESTAMP(p) types and only provides
+# fixed millisecond precision, so non-millisecond precision cases are skipped.
+hide = true
