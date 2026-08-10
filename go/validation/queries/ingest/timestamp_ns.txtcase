@@ -14,6 +14,32 @@
 
 // part: metadata
 
-# PrestoDB does not support parameterized TIMESTAMP(p) types and only provides
-# fixed millisecond precision, so non-millisecond precision cases are skipped.
-hide = true
+[tags]
+caveats = ["Sub-millisecond precision is truncated"]
+
+// part: expected_schema
+
+{
+    "format": "+s",
+    "children": [
+        {
+            "name": "idx",
+            "format": "l",
+            "flags": ["nullable"]
+        },
+        {
+            "name": "value",
+            "format": "tsm:",
+            "flags": ["nullable"]
+        }
+    ]
+}
+
+// part: expected
+
+{"idx": 0, "value": null}
+{"idx": 1, "value": 0}
+{"idx": 2, "value": -9223372036855}
+{"idx": 3, "value": 946684800000}
+{"idx": 4, "value": 1684158330000}
+{"idx": 5, "value": 9223372036854}
