@@ -12,14 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// part: metadata
+
+[tags]
+caveats = [
+    "Due to [presto-go-client#102](https://github.com/prestodb/presto-go-client/issues/102), the maximum integer value that can be decoded is 9223372036854774784.",
+]
+partial-support = true
+
 // part: bind_query
 
 INSERT INTO test_int64 VALUES (CAST($1 AS BIGINT))
 
-// presto-go-client#102: MaxInt64 loses precision during row decoding and
-// becomes MinInt64 on Linux/AMD64. Use the nearest exactly representable
-// float64 below MaxInt64 as a temporary workaround.
-// https://github.com/prestodb/presto-go-client/issues/102
 // part: bind
 
 {"res": 42}

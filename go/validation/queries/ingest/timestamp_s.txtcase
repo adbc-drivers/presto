@@ -12,8 +12,29 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// part: metadata
+// part: expected_schema
 
-# PrestoDB does not support parameterized TIMESTAMP(p) types and only provides
-# fixed millisecond precision, so non-millisecond precision cases are skipped.
-hide = true
+{
+    "format": "+s",
+    "children": [
+        {
+            "name": "idx",
+            "format": "l",
+            "flags": ["nullable"]
+        },
+        {
+            "name": "value",
+            "format": "tsm:",
+            "flags": ["nullable"]
+        }
+    ]
+}
+
+// part: expected
+
+{"idx": 0, "value": null}
+{"idx": 1, "value": 0}
+{"idx": 2, "value": 946684800000}
+{"idx": 3, "value": 1684158330000}
+{"idx": 4, "value": -62135596800000}
+{"idx": 5, "value": 253402300799000}
