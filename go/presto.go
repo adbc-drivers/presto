@@ -46,7 +46,7 @@ type prestoTypeConverter struct {
 const vendorName = "Presto"
 
 var typeConverter = &prestoTypeConverter{
-	DefaultTypeConverter: sqlwrapper.DefaultTypeConverter{VendorName: vendorName},
+	VendorName: vendorName,
 }
 
 // ConvertRawColumnType implements TypeConverter with Presto-specific enhancements.
