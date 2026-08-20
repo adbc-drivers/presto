@@ -256,7 +256,7 @@ func (q *PrestoQuirks) GetMetadata(code adbc.InfoCode) any {
 	case adbc.InfoDriverVersion:
 		return "(unknown or development build)"
 	case adbc.InfoDriverArrowVersion:
-		return "(unknown or development build)"
+		return "v18.7.0"
 	case adbc.InfoVendorVersion:
 		return regexp.MustCompile(`Presto [0-9]+`)
 	case adbc.InfoVendorArrowVersion:

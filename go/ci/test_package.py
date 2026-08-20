@@ -18,11 +18,11 @@ import pytest
 
 def test_package() -> None:
     uri = "presto://localhost:1234?ssl_ca=missing-test-ca.pem"
-    with pytest.raises(
-        adbc_driver_manager.dbapi.ProgrammingError,
-        match="failed to read CA certificate",
+    with (
+        pytest.raises(
+            adbc_driver_manager.dbapi.ProgrammingError,
+            match="failed to read CA certificate",
+        ),
+        adbc_driver_manager.dbapi.connect(driver="presto", uri=uri, autocommit=True),
     ):
-        with adbc_driver_manager.dbapi.connect(
-            driver="presto", uri=uri, autocommit=True
-        ):
-            pass
+        pass

@@ -70,12 +70,14 @@ def test_username_options(
         "uri": uri,
         "username": presto_username,
     }
-    with adbc_driver_manager.dbapi.connect(
-        driver=driver_path,
-        db_kwargs=params,
-    ) as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT 1")
+    with (
+        adbc_driver_manager.dbapi.connect(
+            driver=driver_path,
+            db_kwargs=params,
+        ) as conn,
+        conn.cursor() as cursor,
+    ):
+        cursor.execute("SELECT 1")
 
 
 @pytest.mark.parametrize("ssl_mode", ["trusted_ca", "skip_verification", "plain_http"])
@@ -115,14 +117,16 @@ def test_ssl_modes(
         )
     )
 
-    with adbc_driver_manager.dbapi.connect(
-        driver=driver_path,
-        db_kwargs={"uri": ssl_uri},
-    ) as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT 1")
-            result = cursor.fetchone()
-            assert result[0] == 1
+    with (
+        adbc_driver_manager.dbapi.connect(
+            driver=driver_path,
+            db_kwargs={"uri": ssl_uri},
+        ) as conn,
+        conn.cursor() as cursor,
+    ):
+        cursor.execute("SELECT 1")
+        result = cursor.fetchone()
+        assert result[0] == 1
 
 
 def test_uri_catalog_schema_parsing(
@@ -186,13 +190,15 @@ def test_ipv6_host_support(
         f"?{presto_uri_query}"
     )
 
-    with adbc_driver_manager.dbapi.connect(
-        driver=driver_path,
-        db_kwargs={"uri": ipv6_uri},
-    ) as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT 1")
-            assert cursor.fetchone()[0] == 1
+    with (
+        adbc_driver_manager.dbapi.connect(
+            driver=driver_path,
+            db_kwargs={"uri": ipv6_uri},
+        ) as conn,
+        conn.cursor() as cursor,
+    ):
+        cursor.execute("SELECT 1")
+        assert cursor.fetchone()[0] == 1
 
 
 def test_url_encoded_catalog_schema(
@@ -223,15 +229,17 @@ def test_missing_uri_raises_error(
     driver_path: str,
 ) -> None:
     """Tests that connecting without a 'uri' option raises an error."""
-    with pytest.raises(
-        adbc_driver_manager.dbapi.ProgrammingError,
-        match="missing required option uri",
-    ):
-        with adbc_driver_manager.dbapi.connect(
+    with (
+        pytest.raises(
+            adbc_driver_manager.dbapi.ProgrammingError,
+            match="missing required option uri",
+        ),
+        adbc_driver_manager.dbapi.connect(
             driver=driver_path,
             db_kwargs={},
-        ):
-            pass
+        ),
+    ):
+        pass
 
 
 def test_invalid_uri_format(
@@ -239,15 +247,17 @@ def test_invalid_uri_format(
     driver_path: str,
 ) -> None:
     """Tests that a malformed URI raises a helpful error."""
-    with pytest.raises(
-        adbc_driver_manager.dbapi.ProgrammingError,
-        match="invalid URI format",
-    ):
-        with adbc_driver_manager.dbapi.connect(
+    with (
+        pytest.raises(
+            adbc_driver_manager.dbapi.ProgrammingError,
+            match="invalid URI format",
+        ),
+        adbc_driver_manager.dbapi.connect(
             driver=driver_path,
             db_kwargs={"uri": "presto://[invalid-format"},
-        ):
-            pass
+        ),
+    ):
+        pass
 
 
 # --- HTTP(S)-style URI tests ---
@@ -313,13 +323,15 @@ def test_plain_host_with_username_options(
     query = urllib.parse.urlencode(query_params)
     suffix = f"?{query}" if query else ""
 
-    with adbc_driver_manager.dbapi.connect(
-        driver=driver_path,
-        db_kwargs={
-            "uri": f"{presto_host}:{presto_port}{suffix}",
-            "username": presto_username,
-        },
-    ) as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT 1")
-            assert cursor.fetchone()[0] == 1
+    with (
+        adbc_driver_manager.dbapi.connect(
+            driver=driver_path,
+            db_kwargs={
+                "uri": f"{presto_host}:{presto_port}{suffix}",
+                "username": presto_username,
+            },
+        ) as conn,
+        conn.cursor() as cursor,
+    ):
+        cursor.execute("SELECT 1")
+        assert cursor.fetchone()[0] == 1
