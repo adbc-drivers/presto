@@ -103,6 +103,25 @@ See [Presto Concepts](https://prestodb.io/docs/current/overview/concepts.html#ca
 
 {{ types|safe }}
 
+## Options
+
+`uri`
+: **Required.** **Type:** string.
+
+  The connection URI described in [Connection String Format](#connection-string-format).
+
+`username`
+: **Type:** string.
+
+  User name for HTTP basic authentication. Overrides the user name in `uri`.
+
+`password`
+: **Type:** string.
+
+  Password for HTTP basic authentication. Overrides the password in `uri`.
+  Use basic authentication only over HTTPS, since the password is otherwise
+  sent in clear text.
+
 ## Compatibility
 
 {{ compatibility_info|safe }}
