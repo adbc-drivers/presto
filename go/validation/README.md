@@ -30,7 +30,7 @@
    export PRESTO_SCHEMA="default"
    export PRESTO_SSL_MODE="http"
    export PRESTO_USERNAME="test"
-   export PRESTO_DSN="presto://test@localhost:8080/memory/default"
+   export PRESTO_DSN="http://test@localhost:8080/memory/default"
    ```
 
    The local Docker setup serves HTTP on port 8080 and HTTPS on port 8443. It

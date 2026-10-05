@@ -239,11 +239,11 @@ func (f *PrestoDBFactory) BuildPrestoDSN(opts map[string]string) (string, error)
 // buildPrestoDSN constructs a Presto DSN from the provided options.
 // Handles the following scenarios:
 //  1. Presto URI: "presto://user:pass@host:port/catalog/schema?params"
-//     → passed through, with credential overrides applied.
+//     → TLS by default, with credential overrides applied.
 //  2. HTTP(S) URI: "https://user:pass@host:8443/catalog/schema?params"
-//     → converted to presto:// form; https enables TLS.
-//  3. Plain host + credentials: baseURI="localhost:8080", username="user"
-//     → produces "presto://user@localhost:8080".
+//     → converted to presto:// form; http:// is the way to disable TLS.
+//  3. Plain host + credentials: baseURI="localhost:8443", username="user"
+//     → treated as presto:// and produces "presto://user@localhost:8443".
 func (f *PrestoDBFactory) buildPrestoDSN(opts map[string]string) (*prestoDSN, error) {
 	baseURI := opts[adbc.OptionKeyURI]
 	username := opts[adbc.OptionKeyUsername]
@@ -255,7 +255,7 @@ func (f *PrestoDBFactory) buildPrestoDSN(opts map[string]string) (*prestoDSN, er
 		return nil, fmt.Errorf("missing required option %s", adbc.OptionKeyURI)
 	}
 
-	// Bare host (no scheme): default to presto:// (HTTP).
+	// Bare host (no scheme): default to presto:// (HTTPS).
 	if !strings.Contains(baseURI, "://") {
 		baseURI = "presto://" + baseURI
 	}
@@ -270,7 +270,8 @@ func (f *PrestoDBFactory) buildPrestoDSN(opts map[string]string) (*prestoDSN, er
 
 	switch strings.ToLower(u.Scheme) {
 	case "presto":
-		// Native scheme: TLS is implied by any ssl_* parameter.
+		// Native scheme: TLS by default, matching the other drivers.
+		cfg.useTLS = true
 	case "http":
 		u.Scheme = "presto"
 	case "https":
