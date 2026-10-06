@@ -72,7 +72,7 @@ Reserved characters in URI elements must be URI-encoded. For example, `@` become
 
 #### HTTPS/SSL Configuration
 
-Connections use HTTPS by default, verified against the system trust store.
+Connections use HTTPS by default.
 This applies to `presto://`, `https://`, and URIs without a scheme.  To
 connect without TLS, use an explicit `http://` URI.
 
