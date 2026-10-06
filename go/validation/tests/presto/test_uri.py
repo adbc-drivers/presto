@@ -94,6 +94,7 @@ def test_ssl_modes(
     ssl_mode: str,
 ) -> None:
     """Test trusted HTTPS, HTTPS with disabled verification, and plain HTTP."""
+    scheme = "presto"
     port = presto_https_port
     query_params: list[tuple[str, str]] = []
 
@@ -102,13 +103,15 @@ def test_ssl_modes(
     elif ssl_mode == "skip_verification":
         query_params.append(("ssl_skip_verify", "true"))
     elif ssl_mode == "plain_http":
+        # presto:// always uses TLS; http:// is the plain-text opt-out.
+        scheme = "http"
         port = presto_http_port
     else:
         raise AssertionError(f"unexpected ssl_mode {ssl_mode}")
 
     ssl_uri = urllib.parse.urlunparse(
         (
-            "presto",
+            scheme,
             f"{presto_username}@{presto_host}:{port}",
             f"/{presto_catalog}/{presto_schema}",
             "",
@@ -130,6 +133,7 @@ def test_ssl_modes(
 
 
 def test_uri_catalog_schema_parsing(
+    presto_uri_scheme: str,
     driver: model.DriverQuirks,
     driver_path: str,
     presto_host: str,
@@ -140,7 +144,7 @@ def test_uri_catalog_schema_parsing(
     """Tests that catalog and schema are correctly parsed from URI path."""
 
     full_uri = (
-        f"presto://{presto_username}@{presto_host}:{presto_port}"
+        f"{presto_uri_scheme}://{presto_username}@{presto_host}:{presto_port}"
         f"/memory/test_schema?{presto_uri_query}"
     )
 
@@ -153,6 +157,7 @@ def test_uri_catalog_schema_parsing(
 
 
 def test_uri_catalog_only(
+    presto_uri_scheme: str,
     driver: model.DriverQuirks,
     driver_path: str,
     presto_host: str,
@@ -162,7 +167,7 @@ def test_uri_catalog_only(
 ) -> None:
     """Tests URI with catalog but no schema."""
 
-    catalog_only_uri = f"presto://{presto_username}@{presto_host}:{presto_port}/memory?{presto_uri_query}"
+    catalog_only_uri = f"{presto_uri_scheme}://{presto_username}@{presto_host}:{presto_port}/memory?{presto_uri_query}"
 
     with adbc_driver_manager.dbapi.connect(
         driver=driver_path,
@@ -172,6 +177,7 @@ def test_uri_catalog_only(
 
 
 def test_ipv6_host_support(
+    presto_uri_scheme: str,
     driver: model.DriverQuirks,
     driver_path: str,
     presto_username: str,
@@ -186,7 +192,7 @@ def test_ipv6_host_support(
         pytest.skip("local HTTPS cert covers localhost/127.0.0.1, not ::1")
 
     ipv6_uri = (
-        f"presto://{presto_username}@[::1]:{presto_port}/{presto_catalog}/{presto_schema}"
+        f"{presto_uri_scheme}://{presto_username}@[::1]:{presto_port}/{presto_catalog}/{presto_schema}"
         f"?{presto_uri_query}"
     )
 
@@ -202,6 +208,7 @@ def test_ipv6_host_support(
 
 
 def test_url_encoded_catalog_schema(
+    presto_uri_scheme: str,
     driver: model.DriverQuirks,
     driver_path: str,
     presto_host: str,
@@ -212,7 +219,7 @@ def test_url_encoded_catalog_schema(
     """Tests that URL-encoded catalog and schema names work correctly."""
 
     encoded_uri = (
-        f"presto://{presto_username}@{presto_host}:{presto_port}"
+        f"{presto_uri_scheme}://{presto_username}@{presto_host}:{presto_port}"
         f"/my%20catalog/my%20schema?{presto_uri_query}"
     )
 
@@ -316,12 +323,10 @@ def test_plain_host_with_username_options(
     Tests that a plain host string
     is correctly combined with credentials from options.
     """
-    query_params: list[tuple[str, str]] = []
-    if presto_ssl_mode == "https":
-        query_params.append(("ssl_ca", presto_ssl_cert_path))
-
-    query = urllib.parse.urlencode(query_params)
-    suffix = f"?{query}" if query else ""
+    if presto_ssl_mode != "https":
+        pytest.skip("bare hosts always use TLS")
+    query = urllib.parse.urlencode([("ssl_ca", presto_ssl_cert_path)])
+    suffix = f"?{query}"
 
     with (
         adbc_driver_manager.dbapi.connect(

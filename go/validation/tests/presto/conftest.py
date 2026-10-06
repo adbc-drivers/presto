@@ -103,6 +103,12 @@ def presto_uri_query(presto_ssl_mode: str, presto_ssl_cert_path: str) -> str:
 
 
 @pytest.fixture(scope="session")
+def presto_uri_scheme(presto_ssl_mode: str) -> str:
+    """URI scheme for the configured transport; `presto://` always uses TLS."""
+    return "presto" if presto_ssl_mode == "https" else "http"
+
+
+@pytest.fixture(scope="session")
 def presto_http_scheme(presto_ssl_mode: str) -> str:
     return "https" if presto_ssl_mode == "https" else "http"
 
@@ -114,12 +120,13 @@ def uri(
     presto_catalog: str,
     presto_schema: str,
     presto_uri_query: str,
+    presto_uri_scheme: str,
 ) -> str:
     """
     Constructs a clean Presto URI without credentials.
-    Example: presto://localhost:8080/memory/default?SSL=false
+    Example: presto://localhost:8443/memory/default?ssl_ca=/path/to/ca.crt
     """
-    return f"presto://{presto_host}:{presto_port}/{presto_catalog}/{presto_schema}?{presto_uri_query}"
+    return f"{presto_uri_scheme}://{presto_host}:{presto_port}/{presto_catalog}/{presto_schema}?{presto_uri_query}"
 
 
 @pytest.fixture(scope="session")

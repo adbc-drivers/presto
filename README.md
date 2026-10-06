@@ -39,13 +39,14 @@ See [Building](#building) if you would rather build the drivers yourself.
 
 The driver accepts the following URI forms via the `uri` database option:
 
-- `presto://user:pass@host:8080/catalog/schema` — native form; unrecognized
+- `presto://user:pass@host:8443/catalog/schema` — native form; unrecognized
   query parameters become Presto session properties
 - `http://host:8080/catalog/schema` or `https://host:8443/catalog/schema`
-- `host:8080` — bare host and port (HTTP)
+- `host:8443` — bare host and port
 
-TLS is configured with the `ssl_ca`, `ssl_cert`, `ssl_key`, and
-`ssl_skip_verify` query parameters, or implied by an `https://` URI.
+Connections use TLS unless the URI uses the `http://` scheme.  TLS is
+configured with the `ssl_ca`, `ssl_cert`, `ssl_key`, and `ssl_skip_verify`
+query parameters.
 
 ## Building
 
