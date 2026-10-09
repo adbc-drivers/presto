@@ -59,9 +59,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"runtime"
 	"runtime/cgo"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"unsafe"
@@ -87,7 +89,29 @@ const errPrefix = "[presto] "
 const logLevelEnvVar = "ADBC_DRIVER_PRESTO_LOG_LEVEL"
 const logSinkEnvVar = "ADBC_DRIVER_PRESTO_LOG_SINK"
 
-func setErr(err *C.struct_AdbcError, format string, vals ...interface{}) {
+func setErr(err *C.struct_AdbcError, format string) {
+	if err == nil {
+		return
+	}
+
+	if err.release != nil {
+		C.PrestoerrRelease(err)
+	}
+
+	var msg string
+	if strings.HasPrefix(format, errPrefix) {
+		// If the error message already starts with the prefix, we don't
+		// want to add it again.
+		msg = format
+	} else {
+		// Otherwise, we prepend the prefix to the error message.
+		msg = errPrefix + format
+	}
+	err.message = C.CString(msg)
+	err.release = (*[0]byte)(C.Presto_release_error)
+}
+
+func fmtErr(err *C.struct_AdbcError, format string, vals ...interface{}) {
 	if err == nil {
 		return
 	}
@@ -151,6 +175,7 @@ func setErrWithDetails(err *C.struct_AdbcError, adbcError adbc.Error) {
 		cErr.values = (**C.cuint8_t)(C.calloc(C.size_t(numDetails), C.size_t(unsafe.Sizeof((*C.cuint8_t)(nil)))))
 		cErr.lengths = (*C.size_t)(C.calloc(C.size_t(numDetails), C.sizeof_size_t))
 
+		// SAFETY: no copy of fromCArr because these are written to, not read from
 		keys := fromCArr[*C.cchar_t](cErr.keys, numDetails)
 		values := fromCArr[*C.cuint8_t](cErr.values, numDetails)
 		lengths := fromCArr[C.size_t](cErr.lengths, numDetails)
@@ -200,7 +225,7 @@ func poison(err *C.struct_AdbcError, fname string, e interface{}) C.AdbcStatusCo
 		length := runtime.Stack(buf, true)
 		fmt.Fprintf(os.Stderr, "presto driver panicked, stack traces:\n%s", buf[:length])
 	}
-	setErr(err, "%s: Go panic in presto driver (see stderr): %#v", fname, e)
+	fmtErr(err, "%s: Go panic in presto driver (see stderr): %#v", fname, e)
 	return C.ADBC_STATUS_INTERNAL
 }
 
@@ -269,7 +294,8 @@ func getFromHandle[T any](ptr unsafe.Pointer) *T {
 func exportStringOption(val string, out *C.char, length *C.size_t) C.AdbcStatusCode {
 	lenWithTerminator := C.size_t(len(val) + 1)
 	if lenWithTerminator <= *length {
-		sink := fromCArr[byte]((*byte)(unsafe.Pointer(out)), int(*length))
+		// SAFETY: no copy of fromCArr because this is written to, not read from
+		sink := fromCArr[byte]((*byte)(unsafe.Pointer(out)), len(val)+1)
 		copy(sink, val)
 		sink[len(val)] = 0
 	}
@@ -279,43 +305,25 @@ func exportStringOption(val string, out *C.char, length *C.size_t) C.AdbcStatusC
 
 func exportBytesOption(val []byte, out *C.uint8_t, length *C.size_t) C.AdbcStatusCode {
 	if C.size_t(len(val)) <= *length {
-		sink := fromCArr[byte]((*byte)(out), int(*length))
+		// SAFETY: no copy of fromCArr because this is written to, not read from
+		sink := fromCArr[byte]((*byte)(out), len(val))
 		copy(sink, val)
 	}
 	*length = C.size_t(len(val))
 	return C.ADBC_STATUS_OK
 }
 
-type cancellableContext struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-}
-
-func (c *cancellableContext) newContext() context.Context {
-	c.cancelContext()
-	c.ctx, c.cancel = context.WithCancel(context.Background())
-	return c.ctx
-}
-
-func (c *cancellableContext) cancelContext() {
-	if c.cancel != nil {
-		c.cancel()
-	}
-	c.ctx = nil
-	c.cancel = nil
-}
-
 func checkDBAlloc(db *C.struct_AdbcDatabase, err *C.struct_AdbcError, fname string) bool {
 	if globalPoison.Load() {
-		setErr(err, "%s: Go panicked, driver is in unknown state", fname)
+		fmtErr(err, "%s: Go panicked, driver is in unknown state", fname)
 		return false
 	}
 	if db == nil {
-		setErr(err, "%s: database not allocated", fname)
+		fmtErr(err, "%s: database not allocated", fname)
 		return false
 	}
 	if db.private_data == nil {
-		setErr(err, "%s: database not allocated", fname)
+		fmtErr(err, "%s: database not allocated", fname)
 		return false
 	}
 	return true
@@ -327,7 +335,7 @@ func checkDBInit(db *C.struct_AdbcDatabase, err *C.struct_AdbcError, fname strin
 	}
 	cdb := getFromHandle[cDatabase](db.private_data)
 	if cdb.db == nil {
-		setErr(err, "%s: database not initialized", fname)
+		fmtErr(err, "%s: database not initialized", fname)
 		return nil
 	}
 
@@ -479,7 +487,7 @@ type unappliedOpt struct {
 }
 
 type cDatabase struct {
-	cancellableContext
+	driverbase.CancellableContext
 
 	opts map[string]unappliedOpt
 	db   driverbase.Database
@@ -502,7 +510,7 @@ func PrestoDatabaseGetOption(db *C.struct_AdbcDatabase, key *C.cchar_t, value *C
 		setErr(err, "AdbcDatabaseGetOption: options are not supported")
 		return C.ADBC_STATUS_NOT_IMPLEMENTED
 	}
-	val, e := opts.GetOption(cdb.newContext(), C.GoString(key))
+	val, e := opts.GetOption(cdb.NewContext(), C.GoString(key))
 	if e != nil {
 		return C.AdbcStatusCode(errToAdbcErr(err, e))
 	}
@@ -527,7 +535,7 @@ func PrestoDatabaseGetOptionBytes(db *C.struct_AdbcDatabase, key *C.cchar_t, val
 		setErr(err, "AdbcDatabaseGetOptionBytes: options are not supported")
 		return C.ADBC_STATUS_NOT_IMPLEMENTED
 	}
-	val, e := opts.GetOptionBytes(cdb.newContext(), C.GoString(key))
+	val, e := opts.GetOptionBytes(cdb.NewContext(), C.GoString(key))
 	if e != nil {
 		return C.AdbcStatusCode(errToAdbcErr(err, e))
 	}
@@ -547,7 +555,7 @@ func PrestoDatabaseGetOptionDouble(db *C.struct_AdbcDatabase, key *C.cchar_t, va
 		return C.ADBC_STATUS_INVALID_STATE
 	}
 
-	val, e := cdb.db.GetOptionDouble(cdb.newContext(), C.GoString(key))
+	val, e := cdb.db.GetOptionDouble(cdb.NewContext(), C.GoString(key))
 	*value = C.double(val)
 	return C.AdbcStatusCode(errToAdbcErr(err, e))
 }
@@ -564,7 +572,7 @@ func PrestoDatabaseGetOptionInt(db *C.struct_AdbcDatabase, key *C.cchar_t, value
 		return C.ADBC_STATUS_INVALID_STATE
 	}
 
-	val, e := cdb.db.GetOptionInt(cdb.newContext(), C.GoString(key))
+	val, e := cdb.db.GetOptionInt(cdb.NewContext(), C.GoString(key))
 	*value = C.int64_t(val)
 	return C.AdbcStatusCode(errToAdbcErr(err, e))
 }
@@ -592,7 +600,7 @@ func PrestoDatabaseInit(db *C.struct_AdbcDatabase, err *C.struct_AdbcError) (cod
 			stringOpts[k] = *v.stringVal
 		}
 	}
-	ctx := cdb.newContext()
+	ctx := cdb.NewContext()
 	adb, aerr := drv.NewDatabaseWithContext(ctx, stringOpts)
 	if aerr != nil {
 		return C.AdbcStatusCode(errToAdbcErr(err, aerr))
@@ -656,7 +664,7 @@ func PrestoDatabaseRelease(db *C.struct_AdbcDatabase, err *C.struct_AdbcError) (
 	cdb := h.Value().(*cDatabase)
 	h.Delete()
 	if cdb.db != nil {
-		cdb.db.Close(cdb.newContext())
+		cdb.db.Close(cdb.NewContext())
 		cdb.db = nil
 	}
 	cdb.opts = nil
@@ -685,7 +693,7 @@ func PrestoDatabaseSetOption(db *C.struct_AdbcDatabase, key, value *C.cchar_t, e
 
 	k, v := C.GoString(key), C.GoString(value)
 	if cdb.db != nil {
-		e := cdb.db.SetOption(cdb.newContext(), k, v)
+		e := cdb.db.SetOption(cdb.NewContext(), k, v)
 		return C.AdbcStatusCode(errToAdbcErr(err, e))
 	} else {
 		cdb.opts[k] = unappliedOpt{stringVal: new(v)}
@@ -706,10 +714,14 @@ func PrestoDatabaseSetOptionBytes(db *C.struct_AdbcDatabase, key *C.cchar_t, val
 	}
 	cdb := getFromHandle[cDatabase](db.private_data)
 	k := C.GoString(key)
-	v := fromCArr[byte](value, int(length))
+	var safeLen int
+	if safeLen, code = checkLengthToInt(length, err); code != C.ADBC_STATUS_OK {
+		return code
+	}
+	v := C.GoBytes(unsafe.Pointer(value), C.int(safeLen))
 
 	if cdb.db != nil {
-		e := cdb.db.SetOptionBytes(cdb.newContext(), k, v)
+		e := cdb.db.SetOptionBytes(cdb.NewContext(), k, v)
 		return C.AdbcStatusCode(errToAdbcErr(err, e))
 	}
 	cdb.opts[k] = unappliedOpt{byteVal: v}
@@ -731,7 +743,7 @@ func PrestoDatabaseSetOptionDouble(db *C.struct_AdbcDatabase, key *C.cchar_t, va
 	v := float64(value)
 
 	if cdb.db != nil {
-		e := cdb.db.SetOptionDouble(cdb.newContext(), k, v)
+		e := cdb.db.SetOptionDouble(cdb.NewContext(), k, v)
 		return C.AdbcStatusCode(errToAdbcErr(err, e))
 	}
 	cdb.opts[k] = unappliedOpt{doubleVal: new(v)}
@@ -753,7 +765,7 @@ func PrestoDatabaseSetOptionInt(db *C.struct_AdbcDatabase, key *C.cchar_t, value
 	v := int64(value)
 
 	if cdb.db != nil {
-		e := cdb.db.SetOptionInt(cdb.newContext(), k, v)
+		e := cdb.db.SetOptionInt(cdb.NewContext(), k, v)
 		return C.AdbcStatusCode(errToAdbcErr(err, e))
 	}
 	cdb.opts[k] = unappliedOpt{int64Val: new(v)}
@@ -761,7 +773,7 @@ func PrestoDatabaseSetOptionInt(db *C.struct_AdbcDatabase, key *C.cchar_t, value
 }
 
 type cConn struct {
-	cancellableContext
+	driverbase.CancellableContext
 
 	cnxn     driverbase.Connection
 	initArgs map[string]string
@@ -769,15 +781,15 @@ type cConn struct {
 
 func checkConnAlloc(cnxn *C.struct_AdbcConnection, err *C.struct_AdbcError, fname string) bool {
 	if globalPoison.Load() {
-		setErr(err, "%s: Go panicked, driver is in unknown state", fname)
+		fmtErr(err, "%s: Go panicked, driver is in unknown state", fname)
 		return false
 	}
 	if cnxn == nil {
-		setErr(err, "%s: connection not allocated", fname)
+		fmtErr(err, "%s: connection not allocated", fname)
 		return false
 	}
 	if cnxn.private_data == nil {
-		setErr(err, "%s: connection not allocated", fname)
+		fmtErr(err, "%s: connection not allocated", fname)
 		return false
 	}
 	return true
@@ -789,7 +801,7 @@ func checkConnInit(cnxn *C.struct_AdbcConnection, err *C.struct_AdbcError, fname
 	}
 	conn := getFromHandle[cConn](cnxn.private_data)
 	if conn.cnxn == nil {
-		setErr(err, "%s: connection not initialized", fname)
+		fmtErr(err, "%s: connection not initialized", fname)
 		return nil
 	}
 
@@ -808,7 +820,7 @@ func PrestoConnectionGetOption(db *C.struct_AdbcConnection, key *C.cchar_t, valu
 		return C.ADBC_STATUS_INVALID_STATE
 	}
 
-	val, e := conn.cnxn.GetOption(conn.newContext(), C.GoString(key))
+	val, e := conn.cnxn.GetOption(conn.NewContext(), C.GoString(key))
 	if e != nil {
 		return C.AdbcStatusCode(errToAdbcErr(err, e))
 	}
@@ -827,7 +839,7 @@ func PrestoConnectionGetOptionBytes(db *C.struct_AdbcConnection, key *C.cchar_t,
 		return C.ADBC_STATUS_INVALID_STATE
 	}
 
-	val, e := conn.cnxn.GetOptionBytes(conn.newContext(), C.GoString(key))
+	val, e := conn.cnxn.GetOptionBytes(conn.NewContext(), C.GoString(key))
 	if e != nil {
 		return C.AdbcStatusCode(errToAdbcErr(err, e))
 	}
@@ -846,7 +858,7 @@ func PrestoConnectionGetOptionDouble(db *C.struct_AdbcConnection, key *C.cchar_t
 		return C.ADBC_STATUS_INVALID_STATE
 	}
 
-	val, e := conn.cnxn.GetOptionDouble(conn.newContext(), C.GoString(key))
+	val, e := conn.cnxn.GetOptionDouble(conn.NewContext(), C.GoString(key))
 	*value = C.double(val)
 	return C.AdbcStatusCode(errToAdbcErr(err, e))
 }
@@ -863,7 +875,7 @@ func PrestoConnectionGetOptionInt(db *C.struct_AdbcConnection, key *C.cchar_t, v
 		return C.ADBC_STATUS_INVALID_STATE
 	}
 
-	val, e := conn.cnxn.GetOptionInt(conn.newContext(), C.GoString(key))
+	val, e := conn.cnxn.GetOptionInt(conn.NewContext(), C.GoString(key))
 	*value = C.int64_t(val)
 	return C.AdbcStatusCode(errToAdbcErr(err, e))
 }
@@ -911,7 +923,7 @@ func PrestoConnectionSetOption(cnxn *C.struct_AdbcConnection, key, val *C.cchar_
 		return C.ADBC_STATUS_OK
 	}
 
-	e := conn.cnxn.SetOption(conn.newContext(), C.GoString(key), C.GoString(val))
+	e := conn.cnxn.SetOption(conn.NewContext(), C.GoString(key), C.GoString(val))
 	return C.AdbcStatusCode(errToAdbcErr(err, e))
 }
 
@@ -927,7 +939,11 @@ func PrestoConnectionSetOptionBytes(db *C.struct_AdbcConnection, key *C.cchar_t,
 		return C.ADBC_STATUS_INVALID_STATE
 	}
 
-	e := conn.cnxn.SetOptionBytes(conn.newContext(), C.GoString(key), fromCArr[byte](value, int(length)))
+	var safeLen int
+	if safeLen, code = checkLengthToInt(length, err); code != C.ADBC_STATUS_OK {
+		return code
+	}
+	e := conn.cnxn.SetOptionBytes(conn.NewContext(), C.GoString(key), C.GoBytes(unsafe.Pointer(value), C.int(safeLen)))
 	return C.AdbcStatusCode(errToAdbcErr(err, e))
 }
 
@@ -943,7 +959,7 @@ func PrestoConnectionSetOptionDouble(db *C.struct_AdbcConnection, key *C.cchar_t
 		return C.ADBC_STATUS_INVALID_STATE
 	}
 
-	e := conn.cnxn.SetOptionDouble(conn.newContext(), C.GoString(key), float64(value))
+	e := conn.cnxn.SetOptionDouble(conn.NewContext(), C.GoString(key), float64(value))
 	return C.AdbcStatusCode(errToAdbcErr(err, e))
 }
 
@@ -959,7 +975,7 @@ func PrestoConnectionSetOptionInt(db *C.struct_AdbcConnection, key *C.cchar_t, v
 		return C.ADBC_STATUS_INVALID_STATE
 	}
 
-	e := conn.cnxn.SetOptionInt(conn.newContext(), C.GoString(key), int64(value))
+	e := conn.cnxn.SetOptionInt(conn.NewContext(), C.GoString(key), int64(value))
 	return C.AdbcStatusCode(errToAdbcErr(err, e))
 }
 
@@ -991,7 +1007,7 @@ func PrestoConnectionInit(cnxn *C.struct_AdbcConnection, db *C.struct_AdbcDataba
 
 	if len(conn.initArgs) > 0 {
 		// C allow SetOption before Init, Go doesn't allow options to Open so set them now
-		ctx := conn.newContext()
+		ctx := conn.NewContext()
 		for k, v := range conn.initArgs {
 			rawCode := errToAdbcErr(err, conn.cnxn.SetOption(ctx, k, v))
 			if rawCode != adbc.StatusOK {
@@ -1020,7 +1036,7 @@ func PrestoConnectionRelease(cnxn *C.struct_AdbcConnection, err *C.struct_AdbcEr
 	conn := h.Value().(*cConn)
 	h.Delete()
 	defer func() {
-		conn.cancelContext()
+		conn.CancelContext()
 		conn.cnxn = nil
 
 		// manually trigger GC for two reasons:
@@ -1034,15 +1050,24 @@ func PrestoConnectionRelease(cnxn *C.struct_AdbcConnection, err *C.struct_AdbcEr
 	if conn.cnxn == nil {
 		return C.ADBC_STATUS_OK
 	}
-	return C.AdbcStatusCode(errToAdbcErr(err, conn.cnxn.Close(conn.newContext())))
+	return C.AdbcStatusCode(errToAdbcErr(err, conn.cnxn.Close(conn.NewContext())))
 }
 
+// SAFETY: at each call site, consider whether a copy of the resulting slice must be made
 func fromCArr[T, CType any](ptr *CType, sz int) []T {
 	if ptr == nil || sz == 0 {
 		return nil
 	}
 
 	return unsafe.Slice((*T)(unsafe.Pointer(ptr)), sz)
+}
+
+func checkLengthToInt(length C.size_t, err *C.struct_AdbcError) (int, C.AdbcStatusCode) {
+	if length > C.size_t(math.MaxInt) {
+		fmtErr(err, "Length %d exceeds max Go int %d", length, math.MaxInt)
+		return 0, C.ADBC_STATUS_INVALID_ARGUMENT
+	}
+	return int(length), C.ADBC_STATUS_OK
 }
 
 func toCdataStream(ptr *C.struct_ArrowArrayStream) *cdata.CArrowArrayStream {
@@ -1069,7 +1094,7 @@ func PrestoConnectionCancel(cnxn *C.struct_AdbcConnection, err *C.struct_AdbcErr
 		return C.ADBC_STATUS_INVALID_STATE
 	}
 
-	conn.cancelContext()
+	conn.CancelContext()
 	return C.ADBC_STATUS_OK
 }
 
@@ -1109,8 +1134,12 @@ func PrestoConnectionGetInfo(cnxn *C.struct_AdbcConnection, codes *C.cuint32_t, 
 		return C.ADBC_STATUS_INVALID_STATE
 	}
 
-	infoCodes := fromCArr[adbc.InfoCode](codes, int(len))
-	rdr, e := conn.cnxn.GetInfo(conn.newContext(), infoCodes)
+	var safeLen int
+	if safeLen, code = checkLengthToInt(len, err); code != C.ADBC_STATUS_OK {
+		return code
+	}
+	infoCodes := slices.Clone(fromCArr[adbc.InfoCode](codes, safeLen))
+	rdr, e := conn.cnxn.GetInfo(conn.NewContext(), infoCodes)
 	if e != nil {
 		return C.AdbcStatusCode(errToAdbcErr(err, e))
 	}
@@ -1133,7 +1162,7 @@ func PrestoConnectionGetObjects(cnxn *C.struct_AdbcConnection, depth C.int, cata
 		return C.ADBC_STATUS_INVALID_STATE
 	}
 
-	rdr, e := conn.cnxn.GetObjects(conn.newContext(), adbc.ObjectDepth(depth), toStrPtr(catalog), toStrPtr(dbSchema), toStrPtr(tableName), toStrPtr(columnName), toStrSlice(tableType))
+	rdr, e := conn.cnxn.GetObjects(conn.NewContext(), adbc.ObjectDepth(depth), toStrPtr(catalog), toStrPtr(dbSchema), toStrPtr(tableName), toStrPtr(columnName), toStrSlice(tableType))
 	if e != nil {
 		return C.AdbcStatusCode(errToAdbcErr(err, e))
 	}
@@ -1160,7 +1189,7 @@ func PrestoConnectionGetStatistics(cnxn *C.struct_AdbcConnection, catalog, dbSch
 		return C.ADBC_STATUS_NOT_IMPLEMENTED
 	}
 
-	rdr, e := gs.GetStatistics(conn.newContext(), toStrPtr(catalog), toStrPtr(dbSchema), toStrPtr(tableName), int(approximate) != 0)
+	rdr, e := gs.GetStatistics(conn.NewContext(), toStrPtr(catalog), toStrPtr(dbSchema), toStrPtr(tableName), int(approximate) != 0)
 	if e != nil {
 		return C.AdbcStatusCode(errToAdbcErr(err, e))
 	}
@@ -1188,7 +1217,7 @@ func PrestoConnectionGetStatisticNames(cnxn *C.struct_AdbcConnection, out *C.str
 		return C.ADBC_STATUS_NOT_IMPLEMENTED
 	}
 
-	rdr, e := gs.GetStatisticNames(conn.newContext())
+	rdr, e := gs.GetStatisticNames(conn.NewContext())
 	if e != nil {
 		return C.AdbcStatusCode(errToAdbcErr(err, e))
 	}
@@ -1209,7 +1238,7 @@ func PrestoConnectionGetTableSchema(cnxn *C.struct_AdbcConnection, catalog, dbSc
 		return C.ADBC_STATUS_INVALID_STATE
 	}
 
-	sc, e := conn.cnxn.GetTableSchema(conn.newContext(), toStrPtr(catalog), toStrPtr(dbSchema), C.GoString(tableName))
+	sc, e := conn.cnxn.GetTableSchema(conn.NewContext(), toStrPtr(catalog), toStrPtr(dbSchema), C.GoString(tableName))
 	if e != nil {
 		return C.AdbcStatusCode(errToAdbcErr(err, e))
 	}
@@ -1229,7 +1258,7 @@ func PrestoConnectionGetTableTypes(cnxn *C.struct_AdbcConnection, out *C.struct_
 		return C.ADBC_STATUS_INVALID_STATE
 	}
 
-	rdr, e := conn.cnxn.GetTableTypes(conn.newContext())
+	rdr, e := conn.cnxn.GetTableTypes(conn.NewContext())
 	if e != nil {
 		return C.AdbcStatusCode(errToAdbcErr(err, e))
 	}
@@ -1250,7 +1279,11 @@ func PrestoConnectionReadPartition(cnxn *C.struct_AdbcConnection, serialized *C.
 		return C.ADBC_STATUS_INVALID_STATE
 	}
 
-	rdr, e := conn.cnxn.ReadPartition(conn.newContext(), fromCArr[byte](serialized, int(serializedLen)))
+	var safeLen int
+	if safeLen, code = checkLengthToInt(serializedLen, err); code != C.ADBC_STATUS_OK {
+		return code
+	}
+	rdr, e := conn.cnxn.ReadPartition(conn.NewContext(), C.GoBytes(unsafe.Pointer(serialized), C.int(safeLen)))
 	if e != nil {
 		return C.AdbcStatusCode(errToAdbcErr(err, e))
 	}
@@ -1271,7 +1304,7 @@ func PrestoConnectionCommit(cnxn *C.struct_AdbcConnection, err *C.struct_AdbcErr
 		return C.ADBC_STATUS_INVALID_STATE
 	}
 
-	return C.AdbcStatusCode(errToAdbcErr(err, conn.cnxn.Commit(conn.newContext())))
+	return C.AdbcStatusCode(errToAdbcErr(err, conn.cnxn.Commit(conn.NewContext())))
 }
 
 //export PrestoConnectionRollback
@@ -1286,11 +1319,13 @@ func PrestoConnectionRollback(cnxn *C.struct_AdbcConnection, err *C.struct_AdbcE
 		return C.ADBC_STATUS_INVALID_STATE
 	}
 
-	return C.AdbcStatusCode(errToAdbcErr(err, conn.cnxn.Rollback(conn.newContext())))
+	return C.AdbcStatusCode(errToAdbcErr(err, conn.cnxn.Rollback(conn.NewContext())))
 }
 
 type cStmt struct {
-	cancellableContext
+	driverbase.CancellableContext
+	// Non-execution calls must not make StatementCancel report success.
+	executionContext driverbase.CancellableContext
 
 	// TODO(lidavidm): assume driverbase.Statement here to avoid casts below
 	stmt adbc.StatementWithContext
@@ -1298,15 +1333,15 @@ type cStmt struct {
 
 func checkStmtAlloc(stmt *C.struct_AdbcStatement, err *C.struct_AdbcError, fname string) bool {
 	if globalPoison.Load() {
-		setErr(err, "%s: Go panicked, driver is in unknown state", fname)
+		fmtErr(err, "%s: Go panicked, driver is in unknown state", fname)
 		return false
 	}
 	if stmt == nil {
-		setErr(err, "%s: statement not allocated", fname)
+		fmtErr(err, "%s: statement not allocated", fname)
 		return false
 	}
 	if stmt.private_data == nil {
-		setErr(err, "%s: statement not allocated", fname)
+		fmtErr(err, "%s: statement not allocated", fname)
 		return false
 	}
 	return true
@@ -1318,7 +1353,7 @@ func checkStmtInit(stmt *C.struct_AdbcStatement, err *C.struct_AdbcError, fname 
 	}
 	cStmt := getFromHandle[cStmt](stmt.private_data)
 	if cStmt.stmt == nil {
-		setErr(err, "%s: statement not allocated", fname)
+		fmtErr(err, "%s: statement not allocated", fname)
 		return nil
 	}
 	return cStmt
@@ -1341,7 +1376,7 @@ func PrestoStatementGetOption(db *C.struct_AdbcStatement, key *C.cchar_t, value 
 		setErr(err, "AdbcStatementGetOption: options are not supported")
 		return C.ADBC_STATUS_NOT_IMPLEMENTED
 	}
-	val, e := opts.GetOption(st.newContext(), C.GoString(key))
+	val, e := opts.GetOption(st.NewContext(), C.GoString(key))
 	if e != nil {
 		return C.AdbcStatusCode(errToAdbcErr(err, e))
 	}
@@ -1365,7 +1400,7 @@ func PrestoStatementGetOptionBytes(db *C.struct_AdbcStatement, key *C.cchar_t, v
 		setErr(err, "AdbcStatementGetOptionBytes: options are not supported")
 		return C.ADBC_STATUS_NOT_IMPLEMENTED
 	}
-	val, e := opts.GetOptionBytes(st.newContext(), C.GoString(key))
+	val, e := opts.GetOptionBytes(st.NewContext(), C.GoString(key))
 	if e != nil {
 		return C.AdbcStatusCode(errToAdbcErr(err, e))
 	}
@@ -1390,7 +1425,7 @@ func PrestoStatementGetOptionDouble(db *C.struct_AdbcStatement, key *C.cchar_t, 
 		return C.ADBC_STATUS_NOT_IMPLEMENTED
 	}
 
-	val, e := opts.GetOptionDouble(st.newContext(), C.GoString(key))
+	val, e := opts.GetOptionDouble(st.NewContext(), C.GoString(key))
 	*value = C.double(val)
 	return C.AdbcStatusCode(errToAdbcErr(err, e))
 }
@@ -1413,7 +1448,7 @@ func PrestoStatementGetOptionInt(db *C.struct_AdbcStatement, key *C.cchar_t, val
 		return C.ADBC_STATUS_NOT_IMPLEMENTED
 	}
 
-	val, e := opts.GetOptionInt(st.newContext(), C.GoString(key))
+	val, e := opts.GetOptionInt(st.NewContext(), C.GoString(key))
 	*value = C.int64_t(val)
 	return C.AdbcStatusCode(errToAdbcErr(err, e))
 }
@@ -1439,7 +1474,7 @@ func PrestoStatementNew(cnxn *C.struct_AdbcConnection, stmt *C.struct_AdbcStatem
 		return C.ADBC_STATUS_INVALID_STATE
 	}
 
-	st, e := conn.cnxn.NewStatement(conn.newContext())
+	st, e := conn.cnxn.NewStatement(conn.NewContext())
 	if e != nil {
 		return C.AdbcStatusCode(errToAdbcErr(err, e))
 	}
@@ -1469,7 +1504,8 @@ func PrestoStatementRelease(stmt *C.struct_AdbcStatement, err *C.struct_AdbcErro
 	st := h.Value().(*cStmt)
 	h.Delete()
 	defer func() {
-		st.cancelContext()
+		st.CancelContext()
+		st.executionContext.CancelContext()
 		st.stmt = nil
 		// manually trigger GC for two reasons:
 		//  1. ASAN expects the release callback to be called before
@@ -1482,7 +1518,7 @@ func PrestoStatementRelease(stmt *C.struct_AdbcStatement, err *C.struct_AdbcErro
 	if st.stmt == nil {
 		return C.ADBC_STATUS_OK
 	}
-	return C.AdbcStatusCode(errToAdbcErr(err, st.stmt.Close(st.newContext())))
+	return C.AdbcStatusCode(errToAdbcErr(err, st.stmt.Close(st.NewContext())))
 }
 
 //export PrestoStatementCancel
@@ -1497,7 +1533,23 @@ func PrestoStatementCancel(stmt *C.struct_AdbcStatement, err *C.struct_AdbcError
 		return C.ADBC_STATUS_INVALID_STATE
 	}
 
-	st.cancelContext()
+	active := st.executionContext.CancelContext()
+	canceler, ok := st.stmt.(driverbase.StatementCanceler)
+	if !ok {
+		if active {
+			return C.ADBC_STATUS_OK
+		}
+		setErr(err, "AdbcStatementCancel: no active query to cancel")
+		return C.ADBC_STATUS_INVALID_STATE
+	}
+
+	if e := canceler.Cancel(context.Background()); e != nil {
+		var adbcErr adbc.Error
+		if active && errors.As(e, &adbcErr) && adbcErr.Code == adbc.StatusInvalidState {
+			return C.ADBC_STATUS_OK
+		}
+		return C.AdbcStatusCode(errToAdbcErr(err, e))
+	}
 	return C.ADBC_STATUS_OK
 }
 
@@ -1513,7 +1565,7 @@ func PrestoStatementPrepare(stmt *C.struct_AdbcStatement, err *C.struct_AdbcErro
 		return C.ADBC_STATUS_INVALID_STATE
 	}
 
-	return C.AdbcStatusCode(errToAdbcErr(err, st.stmt.Prepare(st.newContext())))
+	return C.AdbcStatusCode(errToAdbcErr(err, st.stmt.Prepare(st.NewContext())))
 }
 
 //export PrestoStatementExecuteQuery
@@ -1528,8 +1580,10 @@ func PrestoStatementExecuteQuery(stmt *C.struct_AdbcStatement, out *C.struct_Arr
 		return C.ADBC_STATUS_INVALID_STATE
 	}
 
+	ctx := st.executionContext.NewContext()
+	defer st.executionContext.FinishContext(ctx)
 	if out == nil {
-		n, e := st.stmt.ExecuteUpdate(st.newContext())
+		n, e := st.stmt.ExecuteUpdate(ctx)
 		if e != nil {
 			return C.AdbcStatusCode(errToAdbcErr(err, e))
 		}
@@ -1538,7 +1592,7 @@ func PrestoStatementExecuteQuery(stmt *C.struct_AdbcStatement, out *C.struct_Arr
 			*affected = C.int64_t(n)
 		}
 	} else {
-		rdr, n, e := st.stmt.ExecuteQuery(st.newContext())
+		rdr, n, e := st.stmt.ExecuteQuery(ctx)
 		if e != nil {
 			return C.AdbcStatusCode(errToAdbcErr(err, e))
 		}
@@ -1571,7 +1625,9 @@ func PrestoStatementExecuteSchema(stmt *C.struct_AdbcStatement, schema *C.struct
 		return C.ADBC_STATUS_NOT_IMPLEMENTED
 	}
 
-	sc, e := es.ExecuteSchema(st.newContext())
+	ctx := st.executionContext.NewContext()
+	defer st.executionContext.FinishContext(ctx)
+	sc, e := es.ExecuteSchema(ctx)
 	if e != nil {
 		return C.AdbcStatusCode(errToAdbcErr(err, e))
 	}
@@ -1592,7 +1648,7 @@ func PrestoStatementSetSqlQuery(stmt *C.struct_AdbcStatement, query *C.cchar_t, 
 		return C.ADBC_STATUS_INVALID_STATE
 	}
 
-	e := st.stmt.SetSqlQuery(st.newContext(), C.GoString(query))
+	e := st.stmt.SetSqlQuery(st.NewContext(), C.GoString(query))
 	return C.AdbcStatusCode(errToAdbcErr(err, e))
 }
 
@@ -1608,7 +1664,11 @@ func PrestoStatementSetSubstraitPlan(stmt *C.struct_AdbcStatement, plan *C.cuint
 		return C.ADBC_STATUS_INVALID_STATE
 	}
 
-	e := st.stmt.SetSubstraitPlan(st.newContext(), fromCArr[byte](plan, int(length)))
+	var safeLen int
+	if safeLen, code = checkLengthToInt(length, err); code != C.ADBC_STATUS_OK {
+		return code
+	}
+	e := st.stmt.SetSubstraitPlan(st.NewContext(), C.GoBytes(unsafe.Pointer(plan), C.int(safeLen)))
 	return C.AdbcStatusCode(errToAdbcErr(err, e))
 }
 
@@ -1631,7 +1691,7 @@ func PrestoStatementBind(stmt *C.struct_AdbcStatement, values *C.struct_ArrowArr
 		return C.AdbcStatusCode(errToAdbcErr(err, e))
 	}
 	defer rec.Release()
-	e = st.stmt.Bind(st.newContext(), rec)
+	e = st.stmt.Bind(st.NewContext(), rec)
 	return C.AdbcStatusCode(errToAdbcErr(err, e))
 }
 
@@ -1651,7 +1711,7 @@ func PrestoStatementBindStream(stmt *C.struct_AdbcStatement, stream *C.struct_Ar
 	if e != nil {
 		return C.AdbcStatusCode(errToAdbcErr(err, e))
 	}
-	e = st.stmt.BindStream(st.newContext(), rdr.(array.RecordReader))
+	e = st.stmt.BindStream(st.NewContext(), rdr.(array.RecordReader))
 	return C.AdbcStatusCode(errToAdbcErr(err, e))
 }
 
@@ -1667,7 +1727,7 @@ func PrestoStatementGetParameterSchema(stmt *C.struct_AdbcStatement, schema *C.s
 		return C.ADBC_STATUS_INVALID_STATE
 	}
 
-	sc, e := st.stmt.GetParameterSchema(st.newContext())
+	sc, e := st.stmt.GetParameterSchema(st.NewContext())
 	if e != nil {
 		return C.AdbcStatusCode(errToAdbcErr(err, e))
 	}
@@ -1687,7 +1747,7 @@ func PrestoStatementSetOption(stmt *C.struct_AdbcStatement, key, value *C.cchar_
 		return C.ADBC_STATUS_INVALID_STATE
 	}
 
-	e := st.stmt.SetOption(st.newContext(), C.GoString(key), C.GoString(value))
+	e := st.stmt.SetOption(st.NewContext(), C.GoString(key), C.GoString(value))
 	return C.AdbcStatusCode(errToAdbcErr(err, e))
 }
 
@@ -1709,7 +1769,11 @@ func PrestoStatementSetOptionBytes(db *C.struct_AdbcStatement, key *C.cchar_t, v
 		return C.ADBC_STATUS_NOT_IMPLEMENTED
 	}
 
-	e := opts.SetOptionBytes(st.newContext(), C.GoString(key), fromCArr[byte](value, int(length)))
+	var safeLen int
+	if safeLen, code = checkLengthToInt(length, err); code != C.ADBC_STATUS_OK {
+		return code
+	}
+	e := opts.SetOptionBytes(st.NewContext(), C.GoString(key), C.GoBytes(unsafe.Pointer(value), C.int(safeLen)))
 	return C.AdbcStatusCode(errToAdbcErr(err, e))
 }
 
@@ -1731,7 +1795,7 @@ func PrestoStatementSetOptionDouble(db *C.struct_AdbcStatement, key *C.cchar_t, 
 		return C.ADBC_STATUS_NOT_IMPLEMENTED
 	}
 
-	e := opts.SetOptionDouble(st.newContext(), C.GoString(key), float64(value))
+	e := opts.SetOptionDouble(st.NewContext(), C.GoString(key), float64(value))
 	return C.AdbcStatusCode(errToAdbcErr(err, e))
 }
 
@@ -1753,7 +1817,7 @@ func PrestoStatementSetOptionInt(db *C.struct_AdbcStatement, key *C.cchar_t, val
 		return C.ADBC_STATUS_NOT_IMPLEMENTED
 	}
 
-	e := opts.SetOptionInt(st.newContext(), C.GoString(key), int64(value))
+	e := opts.SetOptionInt(st.NewContext(), C.GoString(key), int64(value))
 	return C.AdbcStatusCode(errToAdbcErr(err, e))
 }
 
@@ -1783,7 +1847,9 @@ func PrestoStatementExecutePartitions(stmt *C.struct_AdbcStatement, schema *C.st
 		return C.ADBC_STATUS_INVALID_STATE
 	}
 
-	sc, part, n, e := st.stmt.ExecutePartitions(st.newContext())
+	ctx := st.executionContext.NewContext()
+	defer st.executionContext.FinishContext(ctx)
+	sc, part, n, e := st.stmt.ExecutePartitions(ctx)
 	if e != nil {
 		return C.AdbcStatusCode(errToAdbcErr(err, e))
 	}
@@ -1811,6 +1877,7 @@ func PrestoStatementExecutePartitions(stmt *C.struct_AdbcStatement, schema *C.st
 		totalLen += len(p)
 	}
 	partitions.private_data = C.calloc(C.size_t(totalLen), C.size_t(1))
+	// SAFETY: no copy of fromCArr because this is written to, not read from
 	dst := fromCArr[byte]((*byte)(partitions.private_data), totalLen)
 
 	partIDs := fromCArr[*C.cuint8_t](partitions.partitions, int(partitions.num_partitions))
@@ -1832,13 +1899,15 @@ func AdbcDriverPrestoInit(version C.int, rawDriver *C.void, err *C.struct_AdbcEr
 
 	switch version {
 	case C.ADBC_VERSION_1_0_0:
+		// SAFETY: no copy of fromCArr because this is written to, not read from
 		sink := fromCArr[byte]((*byte)(unsafe.Pointer(driver)), C.ADBC_DRIVER_1_0_0_SIZE)
 		memory.Set(sink, 0)
 	case C.ADBC_VERSION_1_1_0:
+		// SAFETY: no copy of fromCArr because this is written to, not read from
 		sink := fromCArr[byte]((*byte)(unsafe.Pointer(driver)), C.ADBC_DRIVER_1_1_0_SIZE)
 		memory.Set(sink, 0)
 	default:
-		setErr(err, "Only version 1.0.0/1.1.0 supported, got %d", int(version))
+		fmtErr(err, "Only version 1.0.0/1.1.0 supported, got %d", int(version))
 		return C.ADBC_STATUS_NOT_IMPLEMENTED
 	}
 
