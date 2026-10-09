@@ -39,10 +39,7 @@ To use the driver, provide a Presto connection string as the `uri` option.
 from adbc_driver_manager import dbapi
 
 dbapi.connect(
-  driver="presto",
-  db_kwargs={
-      "uri": "presto://user@localhost:8443/tpch/tiny"
-  }
+    driver="presto", db_kwargs={"uri": "presto://user@localhost:8443/tpch/tiny"}
 )
 ```
 
