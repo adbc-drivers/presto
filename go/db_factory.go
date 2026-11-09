@@ -29,6 +29,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/adbc-drivers/driverbase-go/driverbase"
 	"github.com/adbc-drivers/driverbase-go/sqlwrapper"
 	"github.com/apache/arrow-adbc/go/adbc"
 	presto "github.com/prestodb/presto-go-client/v2"
@@ -260,9 +261,9 @@ func (f *PrestoDBFactory) buildPrestoDSN(opts map[string]string) (*prestoDSN, er
 		baseURI = "presto://" + baseURI
 	}
 
-	u, err := url.Parse(baseURI)
+	u, err := driverbase.SafeParseURL(baseURI)
 	if err != nil {
-		return nil, fmt.Errorf("invalid URI format: %v", err)
+		return nil, fmt.Errorf("invalid URI format: %w", err)
 	}
 
 	cfg := &prestoDSN{}
