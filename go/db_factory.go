@@ -19,7 +19,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -263,10 +262,7 @@ func (f *PrestoDBFactory) buildPrestoDSN(opts map[string]string) (*prestoDSN, er
 
 	u, err := url.Parse(baseURI)
 	if err != nil {
-		if urlErr, ok := errors.AsType[*url.Error](err); ok {
-			err = urlErr.Err
-		}
-		return nil, fmt.Errorf("invalid URI format: %v", err)
+		return nil, fmt.Errorf("invalid URI format")
 	}
 
 	cfg := &prestoDSN{}

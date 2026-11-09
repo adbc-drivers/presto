@@ -912,8 +912,9 @@ func TestInvalidURIDoesNotExposeSecrets(t *testing.T) {
 		uri     string
 		message string
 	}{
-		{"escape", "presto://user:" + password + "@localhost/%zz?token=" + token, "invalid URL escape"},
-		{"port", "presto://user:" + password + "@localhost:invalid/catalog?token=" + token, "invalid port"},
+		{"escape", "presto://user:" + password + "@localhost/%zz?token=" + token, "invalid URI format"},
+		{"port", "presto://user:" + password + "@localhost:invalid/catalog?token=" + token, "invalid URI format"},
+		{"missing userinfo separator and host", "presto://user:" + password + "/db?token=" + token, "invalid URI format"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			drv := presto.NewDriver(memory.DefaultAllocator)
