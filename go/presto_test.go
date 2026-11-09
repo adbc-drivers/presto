@@ -903,3 +903,29 @@ func TestURIParsing(t *testing.T) {
 		})
 	}
 }
+
+func TestInvalidURIDoesNotExposeSecrets(t *testing.T) {
+	const password = "private-password-sentinel"
+	const token = "private-token-sentinel"
+	for _, tc := range []struct {
+		name    string
+		uri     string
+		message string
+	}{
+		{"escape", "presto://user:" + password + "@localhost/%zz?token=" + token, "invalid URL escape"},
+		{"port", "presto://user:" + password + "@localhost:invalid/catalog?token=" + token, "invalid port"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			drv := presto.NewDriver(memory.DefaultAllocator)
+			db, err := drv.NewDatabaseWithContext(context.Background(), map[string]string{adbc.OptionKeyURI: tc.uri})
+			if db != nil {
+				t.Cleanup(func() { require.NoError(t, db.Close(context.Background())) })
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.message)
+			assert.NotContains(t, err.Error(), password)
+			assert.NotContains(t, err.Error(), token)
+			assert.NotContains(t, err.Error(), tc.uri)
+		})
+	}
+}
